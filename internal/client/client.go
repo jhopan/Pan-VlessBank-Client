@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,8 +22,9 @@ type Job struct {
 	Port       int
 }
 type Config struct {
-	Domain      string `json:"domain"`
-	Accounts    int    `json:"accounts"`
+	ServerURL   string `json:"server_url"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
 	Cloudflared string `json:"cloudflared"`
 	SocksBase   int    `json:"socks_base"`
 	HTTPBase    int    `json:"http_base"`
@@ -29,21 +32,76 @@ type Config struct {
 }
 
 func (c Config) Validate() error {
-	if c.Domain == "" || !strings.Contains(c.Domain, ".") || c.Accounts < 1 {
-		return errors.New("domain atau jumlah akun tidak valid")
+	u, e := url.Parse(c.ServerURL)
+	if e != nil || u.Host == "" || (u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname()))) {
+		return errors.New("URL panel harus HTTPS lengkap")
+	}
+	if c.Username == "" || c.Password == "" {
+		return errors.New("username atau password panel kosong")
 	}
 	if c.Listen != "" && !isLoopback(c.Listen) {
 		return errors.New("panel client wajib loopback")
 	}
 	return nil
 }
-func isLoopback(s string) bool { ip := net.ParseIP(s); return ip != nil && ip.IsLoopback() }
-func Jobs(domain string, accounts, socksBase, httpBase int) []Job {
-	jobs := make([]Job, 0, accounts*2)
+func isLoopback(s string) bool     { ip := net.ParseIP(s); return ip != nil && ip.IsLoopback() }
+func isLoopbackHost(s string) bool { ip := net.ParseIP(s); return ip != nil && ip.IsLoopback() }
+func Jobs(domain string, accounts, socks, http int) []Job {
+	out := make([]Job, 0, accounts*2)
 	for i := 1; i <= accounts; i++ {
-		jobs = append(jobs, Job{i, "socks", fmt.Sprintf("socks%d.%s", i, domain), socksBase + i - 1}, Job{i, "http", fmt.Sprintf("http%d.%s", i, domain), httpBase + i - 1})
+		out = append(out, Job{i, "socks", fmt.Sprintf("socks%d.%s", i, domain), socks + i - 1}, Job{i, "http", fmt.Sprintf("http%d.%s", i, domain), http + i - 1})
 	}
-	return jobs
+	return out
+}
+
+type remote struct {
+	Count   int `json:"count"`
+	Proxies []struct {
+		Index  int `json:"idx"`
+		Public struct {
+			Socks string `json:"socks"`
+			HTTP  string `json:"http"`
+		} `json:"public"`
+	} `json:"proxies"`
+}
+
+func Discover(c Config) ([]Job, error) {
+	if e := c.Validate(); e != nil {
+		return nil, e
+	}
+	base := strings.TrimRight(c.ServerURL, "/")
+	req, e := http.NewRequest(http.MethodGet, base+"/api/proxies", nil)
+	if e != nil {
+		return nil, e
+	}
+	req.SetBasicAuth(c.Username, c.Password)
+	res, e := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if e != nil {
+		return nil, e
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("panel mengembalikan HTTP %d", res.StatusCode)
+	}
+	var r remote
+	if e := json.NewDecoder(res.Body).Decode(&r); e != nil {
+		return nil, e
+	}
+	jobs := make([]Job, 0, len(r.Proxies)*2)
+	for i, p := range r.Proxies {
+		idx := p.Index
+		if idx == 0 {
+			idx = i + 1
+		}
+		if p.Public.Socks == "" || p.Public.HTTP == "" {
+			return nil, errors.New("server belum mengatur tunnel proxy publik")
+		}
+		jobs = append(jobs, Job{idx, "socks", p.Public.Socks, c.SocksBase + i}, Job{idx, "http", p.Public.HTTP, c.HTTPBase + i})
+	}
+	if len(jobs) == 0 {
+		return nil, errors.New("server tidak memiliki akun proxy")
+	}
+	return jobs, nil
 }
 func Load(path string) (Config, error) {
 	var c Config
@@ -75,6 +133,7 @@ type Listener struct {
 type Manager struct {
 	mu        sync.Mutex
 	cfg       Config
+	jobs      []Job
 	listeners map[int]*Listener
 }
 
@@ -90,13 +149,23 @@ func New(c Config) *Manager {
 	}
 	return &Manager{cfg: c, listeners: map[int]*Listener{}}
 }
+func (m *Manager) Refresh() error {
+	jobs, e := Discover(m.cfg)
+	if e != nil {
+		return e
+	}
+	m.mu.Lock()
+	m.jobs = jobs
+	m.mu.Unlock()
+	return nil
+}
 func (m *Manager) Start() error {
-	if e := m.cfg.Validate(); e != nil {
+	if e := m.Refresh(); e != nil {
 		return e
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, j := range Jobs(m.cfg.Domain, m.cfg.Accounts, m.cfg.SocksBase, m.cfg.HTTPBase) {
+	for _, j := range m.jobs {
 		if _, ok := m.listeners[j.Port]; ok {
 			continue
 		}
