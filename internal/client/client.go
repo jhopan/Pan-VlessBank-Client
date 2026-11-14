@@ -23,8 +23,7 @@ type Job struct {
 }
 type Config struct {
 	ServerURL   string `json:"server_url"`
-	Username    string `json:"username"`
-	Password    string `json:"password"`
+	ClientToken string `json:"client_token"`
 	Cloudflared string `json:"cloudflared"`
 	SocksBase   int    `json:"socks_base"`
 	HTTPBase    int    `json:"http_base"`
@@ -36,8 +35,8 @@ func (c Config) Validate() error {
 	if e != nil || u.Host == "" || (u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname()))) {
 		return errors.New("URL panel harus HTTPS lengkap")
 	}
-	if c.Username == "" || c.Password == "" {
-		return errors.New("username atau password panel kosong")
+	if c.ClientToken == "" {
+		return errors.New("token client kosong")
 	}
 	if c.Listen != "" && !isLoopback(c.Listen) {
 		return errors.New("panel client wajib loopback")
@@ -55,13 +54,11 @@ func Jobs(domain string, accounts, socks, http int) []Job {
 }
 
 type remote struct {
-	Count   int `json:"count"`
 	Proxies []struct {
-		Index  int `json:"idx"`
-		Public struct {
-			Socks string `json:"socks"`
-			HTTP  string `json:"http"`
-		} `json:"public"`
+		Index int    `json:"idx"`
+		Name  string `json:"name"`
+		Socks string `json:"socks_host"`
+		HTTP  string `json:"http_host"`
 	} `json:"proxies"`
 }
 
@@ -70,11 +67,11 @@ func Discover(c Config) ([]Job, error) {
 		return nil, e
 	}
 	base := strings.TrimRight(c.ServerURL, "/")
-	req, e := http.NewRequest(http.MethodGet, base+"/api/proxies", nil)
+	req, e := http.NewRequest(http.MethodGet, base+"/api/client/proxies", nil)
 	if e != nil {
 		return nil, e
 	}
-	req.SetBasicAuth(c.Username, c.Password)
+	req.Header.Set("Authorization", "Bearer "+c.ClientToken)
 	res, e := (&http.Client{Timeout: 20 * time.Second}).Do(req)
 	if e != nil {
 		return nil, e
@@ -93,10 +90,10 @@ func Discover(c Config) ([]Job, error) {
 		if idx == 0 {
 			idx = i + 1
 		}
-		if p.Public.Socks == "" || p.Public.HTTP == "" {
+		if p.Socks == "" || p.HTTP == "" {
 			return nil, errors.New("server belum mengatur tunnel proxy publik")
 		}
-		jobs = append(jobs, Job{idx, "socks", p.Public.Socks, c.SocksBase + i}, Job{idx, "http", p.Public.HTTP, c.HTTPBase + i})
+		jobs = append(jobs, Job{idx, "socks", p.Socks, c.SocksBase + i}, Job{idx, "http", p.HTTP, c.HTTPBase + i})
 	}
 	if len(jobs) == 0 {
 		return nil, errors.New("server tidak memiliki akun proxy")

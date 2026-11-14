@@ -6,18 +6,17 @@ import (
 	"testing"
 )
 
-func TestDiscoverImportsPublicProxyHosts(t *testing.T) {
+func TestDiscoverUsesBearerClientToken(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u, p, ok := r.BasicAuth()
-		if !ok || u != "panel" || p != "secret" {
+		if r.URL.Path != "/api/client/proxies" || r.Header.Get("Authorization") != "Bearer client-token" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"count":2,"proxies":[{"idx":1,"public":{"socks":"socks1.proxy.example.com","http":"http1.proxy.example.com"}},{"idx":2,"public":{"socks":"socks2.proxy.example.com","http":"http2.proxy.example.com"}}]}`))
+		w.Write([]byte(`{"proxies":[{"idx":1,"name":"one","socks_host":"socks1.proxy.example.com","http_host":"http1.proxy.example.com"},{"idx":2,"name":"two","socks_host":"socks2.proxy.example.com","http_host":"http2.proxy.example.com"}]}`))
 	}))
 	defer s.Close()
-	jobs, err := Discover(Config{ServerURL: s.URL, Username: "panel", Password: "secret", SocksBase: 7001, HTTPBase: 8001})
+	jobs, err := Discover(Config{ServerURL: s.URL, ClientToken: "client-token", SocksBase: 7001, HTTPBase: 8001})
 	if err != nil {
 		t.Fatal(err)
 	}

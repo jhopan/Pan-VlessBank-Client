@@ -10,6 +10,22 @@ Camoufox → 127.0.0.1:7001 → cloudflared access tcp → Cloudflare → Pan-Vl
 
 Cloudflare hanya transport. IP exit tetap ditentukan akun VLESS upstream.
 
+## Buat token client di server
+
+Login sebagai admin pada Panel Pan-VlessBank. Buat token client read-only melalui API admin:
+
+```bash
+curl -u admin:password -X POST https://panel.example.com/api/client-tokens \
+  -d 'label=camoufox-laptop&hours=720'
+```
+
+Simpan nilai `token` yang dikembalikan. Nilai ini hanya muncul sekali. Token hanya dapat membaca hostname proxy publik dari `GET /api/client/proxies`; token tidak dapat mengubah akun, Xray, tunnel, atau konfigurasi panel. Cabut token bila perangkat hilang atau tidak dipakai lagi:
+
+```bash
+curl -u admin:password -X POST https://panel.example.com/api/client-tokens/revoke \
+  -d 'id=TOKEN_ID'
+```
+
 ## Jalankan
 
 Install `cloudflared` di mesin client, lalu jalankan binary:
@@ -21,10 +37,10 @@ Install `cloudflared` di mesin client, lalu jalankan binary:
 Buka `http://127.0.0.1:9900`, lalu isi:
 
 1. URL Panel Pan-VlessBank, misalnya `https://panel.example.com`.
-2. Username dan password Panel.
+2. Token client read-only.
 3. Path `cloudflared` bila tidak ada di PATH.
 
-Klik **Simpan dan impor**, lalu **Impor dan Start**. Client mengambil `/api/proxies` dari panel, otomatis membaca setiap hostname SOCKS dan HTTP publik, dan membuka listener lokal. API token Cloudflare, UUID VLESS, dan link VLESS tidak dikirim ke client.
+Klik **Simpan konfigurasi**, lalu **Impor dan Start**. Client mengambil `/api/client/proxies` memakai `Authorization: Bearer <token>`, otomatis membaca hostname SOCKS dan HTTP publik, lalu membuka listener lokal. Password admin panel, API token Cloudflare, UUID VLESS, dan link VLESS tidak masuk client.
 
 Port lokal default:
 
@@ -55,4 +71,4 @@ proxy = {
 }
 ```
 
-Panel client hanya bind `127.0.0.1`. Config lokal disimpan permission `0600`, dan password panel tidak ditampilkan ulang.
+Panel client hanya bind `127.0.0.1`. Config lokal disimpan permission `0600`, dan token tidak ditampilkan ulang.
