@@ -2,8 +2,7 @@ name: Release Client
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
 
 permissions:
   contents: write
@@ -12,30 +11,25 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-            asset: pan-vlessbank-client_linux_amd64
-          - goos: linux
-            goarch: arm64
-            asset: pan-vlessbank-client_linux_arm64
-          - goos: darwin
-            goarch: amd64
-            asset: pan-vlessbank-client_darwin_amd64
-          - goos: darwin
-            goarch: arm64
-            asset: pan-vlessbank-client_darwin_arm64
-          - goos: windows
-            goarch: amd64
-            asset: pan-vlessbank-client_windows_amd64.exe
+          - { goos: linux, goarch: amd64, asset: pan-vlessbank-client_linux_amd64 }
+          - { goos: linux, goarch: arm64, asset: pan-vlessbank-client_linux_arm64 }
+          - { goos: darwin, goarch: amd64, asset: pan-vlessbank-client_darwin_amd64 }
+          - { goos: darwin, goarch: arm64, asset: pan-vlessbank-client_darwin_arm64 }
+          - { goos: windows, goarch: amd64, asset: pan-vlessbank-client_windows_amd64.exe }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: Build
-        run: CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags='-s -w' -o dist/${{ matrix.asset }} ./cmd/pan-vlessbank-client
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags='-s -w' -o dist/${{ matrix.asset }} ./cmd/pan-vlessbank-client
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
@@ -50,8 +44,14 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Write checksums
-        run: cd dist && sha256sum pan-vlessbank-client* > checksums.txt
-      - name: Publish release
+        working-directory: dist
+        run: sha256sum pan-vlessbank-client_* > checksums.txt
+      - name: Publish versioned and latest releases
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create ${{ github.ref_name }} dist/* --title "Pan-VlessBank Client ${{ github.ref_name }}" --generate-notes
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* --title "Pan-VlessBank Client ${{ github.ref_name }}" --generate-notes || gh release upload "${{ github.ref_name }}" dist/* --clobber
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          git tag -f latest "${{ github.sha }}"
+          git push --force origin latest
+          gh release create latest dist/* --title "Pan-VlessBank Client latest" --notes "Rolling build from ${{ github.ref_name }}"

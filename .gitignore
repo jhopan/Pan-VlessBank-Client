@@ -2,3 +2,4 @@
 /pan-vlessbank-client.exe
 /client.settings.json
 /dist/
+/.tmp-*/

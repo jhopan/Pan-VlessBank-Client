@@ -35,6 +35,32 @@ Relay lokal menyuntikkan credential proxy ke koneksi internal. Camoufox tidak pe
 | Auth Proxy | Ya | `USER_PROXY:PASSWORD_PROXY`, disimpan lokal permission `0600` |
 | VLESS URI, Xray, Cloudflare API token | Tidak | Hanya berada di server |
 
+## Install dan update
+
+Release punya dua channel: `latest` untuk build rolling terbaru, dan `vX.Y.Z` untuk versi tetap. Installer memverifikasi SHA-256 sebelum replace dan tidak mengubah `client.settings.json`.
+
+### Linux dan macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jhopan/Pan-VlessBank-Client/master/install.sh | bash
+```
+
+### Windows
+
+```bat
+curl.exe -fsSL -o install.bat https://raw.githubusercontent.com/jhopan/Pan-VlessBank-Client/master/install.bat
+install.bat
+```
+
+Pin versi atau folder:
+
+```bash
+VLESSBANK_CLIENT_RELEASE=v0.4.1 VLESSBANK_CLIENT_DIR=$HOME/pan-vlessbank-client \
+  curl -fsSL https://raw.githubusercontent.com/jhopan/Pan-VlessBank-Client/master/install.sh | bash
+```
+
+Installer tidak memasang `cloudflared`. Install sendiri atau isi path penuh pada panel client.
+
 ## Jalankan
 
 ```bash
