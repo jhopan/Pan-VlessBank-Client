@@ -24,6 +24,7 @@ type Job struct {
 type Config struct {
 	ServerURL   string `json:"server_url"`
 	ClientToken string `json:"client_token"`
+	ProxyAuth   string `json:"proxy_auth"`
 	Cloudflared string `json:"cloudflared"`
 	SocksBase   int    `json:"socks_base"`
 	HTTPBase    int    `json:"http_base"`
@@ -40,6 +41,12 @@ func (c Config) Validate() error {
 	}
 	if c.Listen != "" && !isLoopback(c.Listen) {
 		return errors.New("panel client wajib loopback")
+	}
+	if c.ProxyAuth != "" {
+		user, pass, ok := strings.Cut(c.ProxyAuth, ":")
+		if !ok || user == "" || pass == "" || len(user) > 255 || len(pass) > 255 {
+			return errors.New("auth proxy harus USER:PASSWORD")
+		}
 	}
 	return nil
 }
@@ -78,6 +85,9 @@ func Discover(c Config) ([]Job, error) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
+		if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+			return nil, errors.New("token client ditolak atau sudah dicabut")
+		}
 		return nil, fmt.Errorf("panel mengembalikan HTTP %d", res.StatusCode)
 	}
 	var r remote
@@ -126,6 +136,7 @@ type Listener struct {
 	PID          int
 	Started      time.Time
 	cmd          *exec.Cmd
+	relay        *SocksRelay
 }
 type Manager struct {
 	mu        sync.Mutex
@@ -157,25 +168,52 @@ func (m *Manager) Refresh() error {
 	return nil
 }
 func (m *Manager) Start() error {
+	if e := CheckCloudflared(m.cfg.Cloudflared); e != nil {
+		return e
+	}
 	if e := m.Refresh(); e != nil {
 		return e
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	started := []*Listener{}
 	for _, j := range m.jobs {
 		if _, ok := m.listeners[j.Port]; ok {
 			continue
 		}
-		cmd := exec.Command(m.cfg.Cloudflared, "access", "tcp", "--hostname", j.Host, "--url", fmt.Sprintf("127.0.0.1:%d", j.Port))
+		bridgePort := j.Port
+		if j.Kind == "socks" {
+			bridgePort += 10000
+		}
+		cmd := exec.Command(m.cfg.Cloudflared, "access", "tcp", "--hostname", j.Host, "--url", fmt.Sprintf("127.0.0.1:%d", bridgePort))
 		if e := cmd.Start(); e != nil {
-			return fmt.Errorf("%s: %w", j.Host, e)
+			for _, l := range started {
+				if l.relay != nil {
+					_ = l.relay.Close()
+				}
+				if l.cmd.Process != nil {
+					_ = l.cmd.Process.Kill()
+				}
+				delete(m.listeners, l.Port)
+			}
+			return fmt.Errorf("listener %s gagal: %w", j.Host, e)
 		}
 		l := &Listener{Job: j, State: "running", PID: cmd.Process.Pid, Started: time.Now(), cmd: cmd}
+		if j.Kind == "socks" && m.cfg.ProxyAuth != "" {
+			relay, e := StartSocksRelay(fmt.Sprintf("127.0.0.1:%d", j.Port), fmt.Sprintf("127.0.0.1:%d", bridgePort), m.cfg.ProxyAuth)
+			if e != nil {
+				_ = cmd.Process.Kill()
+				return fmt.Errorf("relay SOCKS %s gagal: %w", j.Host, e)
+			}
+			l.relay = relay
+		}
 		m.listeners[j.Port] = l
+		started = append(started, l)
 		go m.wait(l)
 	}
 	return nil
 }
+
 func (m *Manager) wait(l *Listener) {
 	e := l.cmd.Wait()
 	m.mu.Lock()
@@ -183,16 +221,23 @@ func (m *Manager) wait(l *Listener) {
 	if m.listeners[l.Port] != l {
 		return
 	}
+	if l.relay != nil {
+		_ = l.relay.Close()
+	}
 	l.State = "error"
 	l.PID = 0
 	if e != nil {
 		l.Error = e.Error()
 	}
 }
+
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, l := range m.listeners {
+		if l.relay != nil {
+			_ = l.relay.Close()
+		}
 		if l.cmd.Process != nil {
 			_ = l.cmd.Process.Kill()
 		}
